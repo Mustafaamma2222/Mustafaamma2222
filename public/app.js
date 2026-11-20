@@ -50,12 +50,6 @@
     toast._t = setTimeout(() => t.classList.remove("show"), 2600);
   }
 
-  function showView(id) {
-    ["#setupView", "#authView", "#resetView", "#mainView"].forEach((v) => $(v).classList.toggle("hidden", v !== id));
-    $("#signOutBtn").classList.toggle("hidden", id !== "#mainView");
-    $("#loading").classList.add("hidden");
-  }
-
   // ---------- الوضع الليلي ----------
   function currentTheme() { return document.documentElement.getAttribute("data-theme") || "light"; }
   function applyTheme(t) {
@@ -70,20 +64,32 @@
     renderActiveTab();
   });
 
-  // ---------- Supabase ----------
-  const cfg = window.APP_CONFIG || {};
-  if (!cfg.SUPABASE_URL || !cfg.SUPABASE_ANON_KEY || /YOUR-/.test(cfg.SUPABASE_URL) || !window.supabase) {
-    showView("#setupView");
-    return;
+  // ---------- التخزين المحلي (في المتصفح) ----------
+  const STORE_KEY = "budget-months-v1";
+  function normalize(r) {
+    return {
+      id: String(r.id || `${r.year}-${r.month}`),
+      year: Number(r.year), month: Number(r.month),
+      salary: Number(r.salary) || 0,
+      expenses: Array.isArray(r.expenses) ? r.expenses.map((e) => ({ name: String(e.name), amount: Number(e.amount) || 0 })) : [],
+      updated_at: r.updated_at || new Date().toISOString()
+    };
   }
-  const sb = window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
-    auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-  });
+  const validRow = (r) => r && Number.isInteger(+r.year) && +r.month >= 1 && +r.month <= 12;
+  function readStore() {
+    try {
+      const data = JSON.parse(localStorage.getItem(STORE_KEY) || "[]");
+      return Array.isArray(data) ? data.filter(validRow).map(normalize) : [];
+    } catch (e) { return []; }
+  }
+  function writeStore(rows) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(rows)); return true; }
+    catch (e) { toast("تعذّر الحفظ في المتصفح", true); return false; }
+  }
 
   // ---------- الحالة ----------
   const now = new Date();
   const state = {
-    user: null,
     months: [],            // [{id, year, month, salary, expenses:[{name, amount}], updated_at}]
     year: now.getFullYear(),
     month: now.getMonth() + 1,
@@ -116,122 +122,26 @@
     return i < SLOT_COUNT ? cssVar(`--s${i + 1}`) : cssVar("--s-other");
   }
 
-  // ---------- المصادقة ----------
-  let authMode = "signin";
-  $$("#authView .seg").forEach((b) => b.addEventListener("click", () => {
-    authMode = b.dataset.mode;
-    $$("#authView .seg").forEach((x) => x.classList.toggle("active", x === b));
-    $("#authTitle").textContent = authMode === "signin" ? "تسجيل الدخول" : "إنشاء حساب جديد";
-    $("#authSubmit").textContent = authMode === "signin" ? "دخول" : "إنشاء الحساب";
-    $("#authPassword").autocomplete = authMode === "signin" ? "current-password" : "new-password";
-    $("#forgotBtn").classList.toggle("hidden", authMode !== "signin");
-    setMsg("#authMsg", "");
-  }));
-
   function setMsg(sel, text, isError) {
     const el = $(sel);
     el.textContent = text;
     el.classList.toggle("error", !!isError);
   }
 
-  const AUTH_ERRORS = {
-    "Invalid login credentials": "البريد الإلكتروني أو كلمة المرور غير صحيحة.",
-    "Email not confirmed": "لم يتم تأكيد البريد الإلكتروني بعد. تحقق من بريدك.",
-    "User already registered": "هذا البريد مسجّل مسبقاً.",
-    "Password should be at least 6 characters.": "كلمة المرور يجب أن تكون 6 أحرف على الأقل."
-  };
-  const authErr = (e) => AUTH_ERRORS[e?.message] || e?.message || "حدث خطأ غير متوقع.";
-
-  $("#authForm").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const email = $("#authEmail").value.trim();
-    const password = $("#authPassword").value;
-    if (!email || password.length < 6) return setMsg("#authMsg", "أدخل بريداً صحيحاً وكلمة مرور من 6 أحرف على الأقل.", true);
-    const btn = $("#authSubmit");
-    btn.disabled = true;
-    setMsg("#authMsg", "جارٍ المعالجة…");
-    try {
-      if (authMode === "signin") {
-        const { error } = await sb.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        setMsg("#authMsg", "");
-      } else {
-        const { data, error } = await sb.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } });
-        if (error) throw error;
-        if (!data.session) setMsg("#authMsg", "تم إنشاء الحساب. افتح رابط التأكيد المرسل إلى بريدك ثم سجّل الدخول.");
-      }
-    } catch (e) {
-      setMsg("#authMsg", authErr(e), true);
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  $("#forgotBtn").addEventListener("click", async () => {
-    const email = $("#authEmail").value.trim();
-    if (!email) return setMsg("#authMsg", "اكتب بريدك الإلكتروني أولاً.", true);
-    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
-    setMsg("#authMsg", error ? authErr(error) : "تم إرسال رابط إعادة التعيين إلى بريدك.", !!error);
-  });
-
-  $("#resetForm").addEventListener("submit", async (ev) => {
-    ev.preventDefault();
-    const password = $("#newPassword").value;
-    if (password.length < 6) return setMsg("#resetMsg", "كلمة المرور يجب أن تكون 6 أحرف على الأقل.", true);
-    const { error } = await sb.auth.updateUser({ password });
-    if (error) return setMsg("#resetMsg", authErr(error), true);
-    toast("تم تحديث كلمة المرور");
-    enterApp();
-  });
-
-  $("#signOutBtn").addEventListener("click", async () => {
-    await sb.auth.signOut();
-  });
-
-  let recovering = false;
-  sb.auth.onAuthStateChange((event, session) => {
-    if (event === "PASSWORD_RECOVERY") { recovering = true; showView("#resetView"); return; }
-    if (recovering) return;
-    const newUser = session?.user || null;
-    if (newUser && (!state.user || state.user.id !== newUser.id)) {
-      state.user = newUser;
-      enterApp();
-    } else if (!newUser) {
-      state.user = null;
-      state.months = [];
-      destroyCharts();
-      showView("#authView");
-    }
-  });
-
   // ---------- تحميل البيانات ----------
-  async function loadMonths() {
-    const { data, error } = await sb.from("months")
-      .select("id, year, month, salary, expenses, updated_at")
-      .order("year", { ascending: true }).order("month", { ascending: true });
-    if (error) throw error;
-    state.months = (data || []).map((r) => ({
-      ...r,
-      salary: Number(r.salary) || 0,
-      expenses: Array.isArray(r.expenses) ? r.expenses.map((e) => ({ name: String(e.name), amount: Number(e.amount) || 0 })) : []
-    }));
+  function loadMonths() {
+    state.months = readStore();
     rebuildColorMap();
   }
 
-  async function enterApp() {
-    recovering = false;
-    $("#loading").classList.remove("hidden");
-    try {
-      await loadMonths();
-    } catch (e) {
-      toast("تعذّر تحميل البيانات: " + (e.message || ""), true);
-    }
+  function enterApp() {
+    loadMonths();
     // افتح آخر شهر محفوظ إن لم يكن الشهر الحالي محفوظاً
     if (!findMonth(state.year, state.month) && state.months.length) {
       const last = sortedMonths().pop();
       if (keyOf(last.year, last.month) > keyOf(state.year, state.month)) { state.year = last.year; state.month = last.month; }
     }
-    showView("#mainView");
+    $("#loading").classList.add("hidden");
     buildPickers();
     selectMonth(state.year, state.month);
   }
@@ -353,7 +263,7 @@
   $("#addCatBtn").addEventListener("click", addCategory);
   $("#newCatName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); addCategory(); } });
 
-  $("#monthForm").addEventListener("submit", async (ev) => {
+  $("#monthForm").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const salary = toNum($("#salaryInput").value);
     const seen = new Set();
@@ -365,28 +275,22 @@
       seen.add(name);
       expenses.push({ name, amount: toNum(c.amount) });
     }
-    const btn = $("#saveBtn");
-    btn.disabled = true;
-    setMsg("#saveMsg", "جارٍ الحفظ…");
-    const row = { user_id: state.user.id, year: state.year, month: state.month, salary, expenses };
-    const { data, error } = await sb.from("months").upsert(row, { onConflict: "user_id,year,month" })
-      .select("id, year, month, salary, expenses, updated_at").single();
-    btn.disabled = false;
-    if (error) { setMsg("#saveMsg", "تعذّر الحفظ: " + error.message, true); return; }
-    const saved = { ...data, salary: Number(data.salary) || 0, expenses: data.expenses.map((e) => ({ name: e.name, amount: Number(e.amount) || 0 })) };
-    state.months = state.months.filter((r) => !(r.year === saved.year && r.month === saved.month)).concat(saved);
+    const saved = normalize({ year: state.year, month: state.month, salary, expenses });
+    const rows = state.months.filter((r) => !(r.year === saved.year && r.month === saved.month)).concat(saved);
+    if (!writeStore(rows)) return;
+    state.months = rows;
     rebuildColorMap();
     setMsg("#saveMsg", "");
     toast(`تم حفظ ${labelOf(state.year, state.month)}`);
     loadDraft(); renderEntry(); updateStatus();
   });
 
-  $("#deleteMonthBtn").addEventListener("click", async () => {
+  $("#deleteMonthBtn").addEventListener("click", () => {
     const r = findMonth(state.year, state.month);
     if (!r || !confirm(`حذف بيانات ${labelOf(r.year, r.month)} نهائياً؟`)) return;
-    const { error } = await sb.from("months").delete().eq("id", r.id);
-    if (error) return toast("تعذّر الحذف: " + error.message, true);
-    state.months = state.months.filter((x) => x.id !== r.id);
+    const rows = state.months.filter((x) => x !== r);
+    if (!writeStore(rows)) return;
+    state.months = rows;
     rebuildColorMap();
     toast("تم حذف الشهر");
     selectMonth(state.year, state.month);
@@ -401,7 +305,6 @@
     renderActiveTab();
   }
   function renderActiveTab() {
-    if (!state.user) return;
     if (state.tab === "entry") renderEntry();
     else if (state.tab === "analysis") renderAnalysis();
     else if (state.tab === "compare") renderCompare();
@@ -669,8 +572,40 @@
   $("#historyTable").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-key]"); if (tr) openFromHistory(tr); });
   $("#historyTable").addEventListener("keydown", (e) => { const tr = e.target.closest("tr[data-key]"); if (tr && e.key === "Enter") openFromHistory(tr); });
 
-  // ---------- بدء التشغيل ----------
-  sb.auth.getSession().then(({ data }) => {
-    if (!data.session && !recovering) showView("#authView");
+  // ---------- نسخة احتياطية ----------
+  $("#exportBtn").addEventListener("click", () => {
+    const blob = new Blob([JSON.stringify({ app: "mizaniyati", version: 1, exported_at: new Date().toISOString(), months: sortedMonths() }, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `mizaniyati-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    toast("تم تنزيل النسخة الاحتياطية");
   });
+  $("#importBtn").addEventListener("click", () => $("#importFile").click());
+  $("#importFile").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      const list = Array.isArray(data) ? data : data.months;
+      if (!Array.isArray(list)) throw new Error("bad");
+      const incoming = list.filter(validRow).map(normalize);
+      if (!incoming.length) throw new Error("empty");
+      if (!confirm(`استيراد ${incoming.length} شهر؟ الأشهر المتطابقة ستُستبدل.`)) return;
+      const keys = new Set(incoming.map((r) => keyOf(r.year, r.month)));
+      const rows = state.months.filter((r) => !keys.has(keyOf(r.year, r.month))).concat(incoming);
+      if (!writeStore(rows)) return;
+      loadMonths();
+      buildPickers();
+      selectMonth(state.year, state.month);
+      toast(`تم استيراد ${incoming.length} شهر`);
+    } catch (err) {
+      toast("الملف غير صالح", true);
+    }
+  });
+
+  // ---------- بدء التشغيل ----------
+  enterApp();
 })();
