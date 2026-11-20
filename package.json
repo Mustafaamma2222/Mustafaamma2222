@@ -1,0 +1,10 @@
+{
+  "name": "monthly-budget-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "متتبع الميزانية الشهرية — Supabase + Netlify",
+  "scripts": {
+    "build": "node scripts/build-config.js",
+    "dev": "npx --yes serve public -l 5173"
+  }
+}
